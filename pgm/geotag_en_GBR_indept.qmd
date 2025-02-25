@@ -1,0 +1,395 @@
+---
+title: "Geographical tags - The independent"
+author: "Claude Grasland"
+format: html
+self-contained: true
+---
+
+
+The aim of this program is to import data from a text file and to transform them into an  annotated corpus with national and macroregional geographical units.
+
+```{r setup1, echo = TRUE,  warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE,  warning = FALSE, message = FALSE)
+library(data.table)
+library(knitr)
+library(quanteda)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(tidytext)
+```
+
+# LOAD & CLEAN
+
+## Load data
+
+We import the data and put them in a single data.frame. Then we select the columns of interest for the corpus and rename them. 
+
+```{r corpus_load}
+
+
+df<-readRDS("../corpus_raw/en_GBR_indept.RDS")
+# select and rename columns of interest
+df$id <- 1:dim(df)[1]                   # Choose unique id
+df$who <- df$media                      # Precise source
+df$when <- df$date                      # Load date
+df$text <- df$title                     # Load text
+df$lang <- df$lang                      # Precise language
+df<-df[,c("id","who","when","lang","text")]
+
+
+# Order by time period
+df<-df[order(df$when),]
+
+# eliminate duplicate
+df<-df[duplicated(df$text)==F,]
+
+# eliminate non complete fields
+df<-df[complete.cases(df),]
+
+# Identify language
+mylang<-"en"
+
+# Identify host country
+mycountry<-"GBR"
+
+
+```
+
+
+
+
+## Clean data
+
+The aim of this step is to clean the text an eliminate pieces of information considered as non relevant. The solution is different according to research objectives.
+
+The aim of this step is to clean the text an eliminate pieces of information considered as non relevant. The solution is different according to research objectives.
+
+
+```{r}
+
+x<-df
+
+# Clean encoding errors
+x$text<-gsub("&apos;","'",x$text)
+
+
+
+# Fin de textes à couper
+x$text<-str_replace(x$text,pattern = "Related Stories.*","")
+x$text<-str_replace(x$text,pattern = "BIRTHDAYS\\..*","")
+x$text<-str_replace(x$text,pattern = "Birthdays\\..*","")
+# textes à supprimer
+x$text<-str_replace_all(x$text,pattern = "Q\\&amp;A","")
+x$text<-str_replace_all(x$text,pattern = "Q\\&A","")
+x$text<-str_replace_all(x$text,pattern = "BREAKING ","")
+x$text<-str_replace_all(x$text,pattern = "BREAKING: ","")
+x$text<-str_replace_all(x$text,pattern = "Breaking: ","")
+x$text<-str_replace_all(x$text,pattern = "Breaking - ","")
+x$text<-str_replace_all(x$text,pattern = "Breaking news: ","")
+x$text<-str_replace_all(x$text,pattern = "Editorial: ","")
+x$text<-str_replace_all(x$text,pattern = "Video: ","")
+x$text<-str_replace_all(x$text,pattern = "VIDEO: ","")
+x$text<-str_replace_all(x$text,pattern = "Videos: ","")
+x$text<-str_replace_all(x$text,pattern = "World news in brief. World ","")
+x$text<-str_replace_all(x$text,pattern = "World news in brief. ","")
+
+
+df<-x
+rm(x)
+```
+
+
+## Transform in quanteda corpus
+
+We transform the datafram into quanteda corpus object in order to obtain informations on the number of tokens and eventually eliminate short texts. 
+
+### Transform in quanteda corpus
+
+```{r}
+qd<-corpus(df,docid_field = "id",text_field = "text")
+```
+
+
+### Control the number of tokens
+
+```{r tokens}
+
+# Compute number of tokens
+qd$nbt<-ntoken(qd)
+
+# Choose news with minimum / maximum number of tokens
+qd<-corpus_subset(qd, nbt<100)
+qd<-corpus_subset(qd, nbt>4)
+
+
+```
+
+
+
+
+# TAG
+
+## Preparation of data
+
+
+### Load dictonary
+
+We loading the last version of the Imageun dictionary and we extract our target language 
+
+```{r load_dict}
+# Load general dictionary
+dict<-read.csv2("../dict/dict_final.csv")
+
+
+# select language
+dict <- dict[dict$lang==mylang,-1]
+
+
+# Visualize
+head(dict)
+```
+
+
+### Load tagging function
+
+```{r func_annotate}
+extract_tags <- function(qd = qd,                       # the corpus of interest
+                         lang = "en",                   # the language to be used
+                         dict = dict,                   # the dictionary of target 
+                         code = "id" ,                  # variable used for coding
+                         tagsname = "tags",             # name of the tags column
+                         split  = c("'","’","-",":"),   # split list (option)
+                         tolow = FALSE                  # transform lower case (option)
+                         )
+{ 
+
+
+  
+# Tokenize  
+x<-as.character(qd)
+
+### Split (optional)
+if(length(split) > 0) { reg<-paste(split, collapse = '|')
+                       x <- gsub(reg," ",x)} 
+### To lower (optional)
+if(tolow) { x <- tolower(x)} 
+
+### Tokenize
+toks<-tokens(x)
+
+
+
+  
+# Load dictionaries and create compounds
+
+### Prepare dictionary
+dict<-dict[dict$lang==lang & is.na(dict$alias)==F,]
+labels <-dict$alias
+if(length(split) > 0) { reg<-paste(split, collapse = '|')
+                       labels<- gsub(reg," ",labels)}  
+if(tolow)       {labels <- tolower(labels)}  
+toks<-tokens_compound(toks,pattern=phrase(labels))
+  
+ # create quanteda dictionary
+keys <-gsub(" ","_",labels)
+qd_dict<-as.list(keys)
+names(qd_dict)<-dict[[code]]
+qd_dict<-dictionary(qd_dict,tolower = FALSE)
+
+# Identify geo tags (states or reg or org ...)
+toks_tags <- tokens_lookup(toks, qd_dict, case_insensitive = F)
+toks_tags <- lapply(toks_tags, unique)
+toks_tags<-as.tokens(toks_tags)
+list_tags<-function(x){res<-paste(x, collapse=' ')}
+docvars(qd)[[tagsname]]<-as.character(lapply(toks_tags,FUN=list_tags))
+docvars(qd)[[paste("nb",tagsname,sep="")]]<-ntoken(toks_tags)
+
+
+
+# Export results
+return(qd)
+ }
+```
+
+
+
+## Geographical annotation
+
+### Annotate all entities
+
+In a first step, we annotate all geographic entities together in order to benefit from the cross-definition of their respective compounds. We will separate them by subcategories in a second step. Each language is done separately.
+
+
+```{r annotate}
+
+
+
+qd <- extract_tags (qd = qd,
+                     lang=mylang,
+                     dict = dict,
+                     code = "code",
+                     tagsname = "geo",
+                     split = c("'","’","-",":"),
+                     tolow = FALSE)
+
+
+```
+
+
+
+### Extract states codes
+
+```{r extract_states}
+# List of entities
+ent <-dict %>% filter(duplicated(code)==F) %>% select(code,code_name)
+
+# selection of states
+state<-ent$code[substr(ent$code,1,3)=="STA"]
+
+# Extract states codes
+test <- paste(state, collapse="|")
+x<-as.character(lapply(str_extract_all(qd$geo,paste(test, collapse = '|')), paste,collapse=" "))
+
+# Keep only ISO3 code
+x<-gsub("STA_NAM_","",x)
+x<-gsub("STA_CAP_","",x)
+x<-gsub("STA_HEA_","",x)
+x<-gsub("_.+","",x)
+
+# Eliminate host country (optional)
+#x<-gsub(mycountry,"",x)
+
+# Eliminate duplicatd states
+y<-tokens(x)
+y<-lapply(y, unique)
+
+
+
+list_tags<-function(x){res<-paste(x, collapse=' ')}
+qd$states<-as.character(lapply(y,FUN=list_tags))
+qd$nbstates<-ntoken(qd$states)
+
+summary(qd,3)
+```
+
+### check news with maximum state number
+
+```{r check_states_news}
+table(qd$nbstates)
+check<-corpus_subset(qd,nbstates>3)
+x<-data.frame(who=check$who,when = check$when,text=as.character(check),states=check$states,nbstates=check$nbstates)
+x<-x[order(x$nbstates,decreasing = T),]
+kable(head(x))
+```
+
+
+
+
+### Extract world region codes
+
+We do not distinguish so-called "geographical" regions (like "Europe") and "political" regions (like "European Union") and put them in the same catagory of world regions i.e. first level of organization under the world level and/or first level of agregation above state level.
+
+
+```{r extract_regions}
+# Extract codes of regions
+region<-ent$code[substr(ent$code,1,3)=="REG"]
+
+# Reorder list of regions with same beginning
+region<-region[order(-nchar(region))]
+test <- paste(region, collapse="|")
+x<-as.character(lapply(str_extract_all(qd$geo,paste(test, collapse = '|')), paste,collapse=" "))
+x<-gsub("REG_","",x)
+
+# collapse EU variant (optional)
+x<-gsub("ORG_EUR_EU.+","ORG_EUR_EU",x)
+
+
+y<-tokens(x)
+y<-lapply(y, unique)
+list_tags<-function(x){res<-paste(x, collapse=' ')}
+qd$regions<-as.character(lapply(y,FUN=list_tags))
+qd$nbregions<-ntoken(qd$regions)
+table(qd$nbregions)
+
+```
+
+### Check news with maximum number of world regions
+
+```{r check_regions_news}
+table(qd$nbregions)
+check<-corpus_subset(qd,nbregions>1)
+x<-data.frame(who=check$who,when = check$when,text=as.character(check),regions=check$regions,nbregions=check$nbregions)
+x<-x[order(x$nbregions,decreasing = T),]
+kable(head(x))
+```
+
+### Check news with mixtures of states and regions
+
+```{r check_states_regions_news}
+
+check<-corpus_subset(qd,nbregions>0 & nbstates >1)
+x<-data.frame(who=check$who,when = check$when,text=as.character(check),geo=check$geo,nbstates=check$nbstates, nbregions = check$nbregions)
+x<-x[order(x$nbstates*x$nbregions,decreasing = T),]
+kable(head(x))
+```
+
+
+### Save geographically anotated corpus
+
+```{r}
+td<-tidy(qd)
+saveRDS(td,"../corpus_geo/en_GBR_indept_geo.RDS")
+```
+
+
+### Extract sample for test (optional)
+
+We extract 200 news :
+
+- 50 news with one foreign state
+- 50 news with one macroregion
+- 50 news with one foreign state and one macroregion
+- 50 news with no foreign states and no macroregions
+
+```{r, eval=FALSE}
+
+set.seed(42)
+# (E) Prepare sample test
+k<-50
+##  news with one single foreign country
+test1<-corpus_subset(qd, nbstates==1 & substr(states,1,3) !=mycountry) %>% 
+        corpus_sample(k) %>% tidy()
+
+## news with one single macro-region
+test2<-corpus_subset(qd, nbregions==1) %>% 
+  corpus_sample(k) %>% tidy()
+
+## news with one foreign country and one macro region
+test3<-corpus_subset(qd, nbstates==1 & substr(states,1,3) !=mycountry & nbregions==1 ) %>% 
+  corpus_sample(k) %>% tidy()
+
+## news with no countries and no macroregions
+test4<-corpus_subset(qd, nbgeo==0) %>% 
+  corpus_sample(k) %>% tidy()
+
+test<-rbind(test1,test2,test3,test4)
+
+res<-data.frame(text=test$text, 
+                tags=test$geo, 
+                S=as.numeric(test$nbstates>0),
+                Spos=0,
+                Sneg=0,
+                R=as.numeric(test$nbregions>0),
+                Rpos=0,
+                Rneg=0,
+                Comment="ok")
+
+
+write.table(res,"../test/en_GBR_indept_geo_test.csv", row.names = F, sep=";")
+```
+
+
+
+
+
