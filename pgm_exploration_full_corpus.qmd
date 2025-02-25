@@ -1,0 +1,450 @@
+---
+title: "Exploration of the corpus"
+subtitle: "Salience of macro-regions & states"
+author: "Etienne Toureille & Claude Grasland"
+date-format: iso
+lang: fr
+format:
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    fontsize: 0.9em
+    toc: true
+    toc-depth: 3
+    toc-title: "."
+    crossrefs-hover: false
+    theme: [yeti]
+execute:
+  warning: false
+  message: false 
+knitr:
+  opts_chunk:
+    out.width: "100%"
+editor_options: 
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+
+
+## Introduction
+
+The objective of this short document is to propose some tables and figure of interest for a salience analysis of the states and macro-regions found  in the annoted corpus (files stored in the repertory "corpus_geo"). We use a miniumum of packages in order to facilitate the replication.
+
+```{r setup, include=FALSE, echo=TRUE}
+# Data manipulation
+library(tidyverse)
+
+# Table visualization
+library(knitr)
+```
+
+
+## A. Settings
+
+### Load annotated corpora
+
+
+```{r}
+
+c1<-readRDS("corpus_geo/de_DEU_suddeu_geo.RDS")
+
+c2<-readRDS("corpus_geo/fr_FRA_figaro_geo.RDS")
+
+c3<-readRDS("corpus_geo/en_GBR_indept_geo.RDS")
+
+c4<-readRDS("corpus_geo/fr_TUN_afrman_geo.RDS")
+
+c5<-readRDS("corpus_geo/tr_TUR_dunya_geo.RDS")
+
+df<-rbind(c1,c2,c3,c4,c5)
+
+
+```
+
+
+### load dictionary
+
+Import of the dictionary used for data annotation. We will just use it to prepare the table before the visualization in order to write the name of the entities (column *code_name*) rather than the codes (column *code*).
+
+```{r}
+# import the .csv file with the dictionary
+dict_df <- read.csv("dict/dict_final.csv",fileEncoding = "UTF-8", sep= ";")
+head(dict_df)
+
+```
+
+
+
+
+### Generalities about the corpus
+
+Identify the number of sources, languages, period of analysis and the total number of articles.
+
+```{r}
+
+# sources
+unique(df$who)
+
+# languages
+unique(df$lang)
+
+# period of analysis
+min(df$when)
+max(df$when)
+
+# total nomber of articles
+nb_titles <- nrow(df)
+print(nb_titles)
+
+```
+
+Compute the number of news for each source in a data frame and visualize in a barplot.
+
+```{r}
+
+# compute total by sources
+nb_articles_by_source <- df %>% 
+  group_by(who) %>% 
+  summarise(nb_articles_source = n())
+
+# print
+kable(nb_articles_by_source)
+
+# plot 
+ggplot(nb_articles_by_source, 
+       aes(x=who,y=nb_articles_source))+ 
+  geom_bar(stat = "identity")+
+  ggtitle("Number of articles by source")+
+  xlab("source")+
+  ylab("Frequence")
+
+```
+
+
+
+## B. Salience of macro-regions
+
+The next step of the analysis consider the individualized salience of each macro-region. The question are: what are the most representd macro-regions in the titles? Which of them are used in each sources?
+
+
+
+### Number of titles containing one or more macro-regions
+
+We first compute the frequency of news with at least one macro-région or more in each media of the corpus
+
+```{r}
+df$macro<-cut(df$nbregions, c(-1,0.5,1.5,100))
+levels(df$macro)<- c("0", "1","2+")
+tab<-table(df$macro,df$who)
+tab<-addmargins(tab)
+pct<-round(100-100*tab[1,]/tab[4,],1)
+tab<-rbind(tab,pct)
+
+colnames(tab)<-c("Südd. Zeitung","Le Figaro","The Independent","Dunya","African Manager", "Full Corpus")
+row.names(tab)<-c("0","1", "2+","Total", "Salience (%)")
+kable(tab, caption ="Frequency of macroregions by media")
+
+write.table(tab,"explor_results/tab_salience_macroregion.csv", row.names=T)
+```
+
+### Unnest regions
+
+We filter the news where the number of region is greater or equal to 0 and we duplicate the news where more that one region is mentionend with the function *unnest()* : 
+```{r}
+# unnest regions
+df2<-  df %>% filter(nbregions >0) %>%
+          mutate(reg = str_split(regions, " ")) %>% 
+          unnest(reg) %>%
+          select(who,reg)
+
+```
+
+
+### Aggregation and ranking 
+
+Now we can aggregate the number of regions and compute the rank, frequency and cumulative frequency. We add the name in english.
+
+```{r}
+## full corpus
+tabtot <- df2 %>% mutate(who="All") %>% 
+                  group_by(who,reg) %>%
+                  count() %>% 
+                  group_by(who) %>%
+                  arrange(-n) %>%
+                  mutate(rnk=rank(-n), 
+                         pct=100*n/sum(n),
+                         cum = cumsum(pct)
+                         ) 
+## By media
+tabmed <- df2 %>% group_by(who,reg) %>%
+                  count() %>% 
+                  group_by(who) %>%
+                  arrange(-n) %>%
+                  mutate(rnk=rank(-n), 
+                         pct=100*n/sum(n),
+                         cum = cumsum(pct)
+                         ) 
+# Join 
+tabres <-rbind(tabmed, tabtot)
+
+
+## add name
+name_en<-dict_df %>% filter(lang=="en") %>% mutate(reg=substr(code,5,100)) %>% select(reg, name=code_name) %>% unique()
+tabres<-tabres %>% left_join(name_en) %>% select(who,reg,name,rnk, n,pct,cum) %>% arrange(who)
+
+```
+
+### Table of top 10 by country
+
+We extract the 10  most mentionned macro-regions by media and for the whole corpus
+
+```{r}
+top10<- tabres %>% filter(rnk < 11) %>% 
+           select(who, rnk, name) %>%
+           pivot_wider(values_from = name,names_from = c(who))
+kable(top10, caption = "Top 10 macro-regions by media")
+write.table(top10,"explor_results/tab_top10_macroregions.csv", sep=";",row.names = F)  
+```
+
+
+
+### Rank size rule
+
+We compute for each media the rank size rule over the 20 most mentionned macro regions.
+
+```{r}
+
+### Extract top20
+top20<- tabres %>% filter(rnk < 33 ) %>% 
+           select(who, rnk, pct, name)  
+
+### Compute model parameters
+mod_ranksize<-lm(formula = log(top20$pct)~top20$who+log(top20$rnk):top20$who)
+param<-mod_ranksize$coefficients
+b<-exp(param[1:6])
+b[2:6]<-b[2:6]+b[1]
+a<-param[7:12]
+media<-c("1.Full Corpus","2.Südd. Zeitung","3.Le Figaro","4.The Independent.","5.Dunya","6.African Manager")
+leg<-paste0(media,": a = ",round(a,2) ," & b = ",round(b,0),"%")
+who<-unique(top20$who)
+tabmod<-data.frame(leg,who)
+
+# Add parameters to dataframe
+top20 <- top20 %>% left_join(tabmod)
+
+
+fig <- ggplot(top20) + aes(x=rnk, y=pct) +
+          geom_line() +
+          geom_point() +
+          geom_smooth(fill = NA, method="lm") +
+          scale_x_log10("X = log. rank", breaks= c(1,2,4,8,16,32), minor_breaks=NULL)+
+          scale_y_log10("Y = log. salience (%)", breaks=c(0.1,1,10,100),
+                        minor_breaks=c(0.2, 0.5,2,5,20,50)) +
+          facet_wrap(~leg,nrow = 3) + 
+          theme_minimal()
+  
+fig
+ggsave(plot=fig,filename = "explor_results/fig_rnksize_macroregions.pdf",width=6, height=7)
+```
+
+
+
+
+
+
+## C. Salience of states
+
+We apply the same procedure to the case of foreign states i.e. states mentioned, excluding the home country of themedia
+
+### Number of titles containing one or more macro-regions
+
+We first compute the frequency of news with at least one macro-région or more in each media of the corpus
+
+```{r}
+df$home<-as.numeric(df$states==substr(df$who,1,3))
+df$stato<-df$nbstates-df$home
+df$stato<-cut(df$stato, c(-1,0.5,1.5,100))
+levels(df$stato)<- c("0", "1","2+")
+tab<-table(df$stato,df$who)
+tab<-addmargins(tab)
+pct<-round(100-100*tab[1,]/tab[4,],1)
+tab<-rbind(tab,pct)
+
+
+colnames(tab)<-c("Südd. Zeitung","Le Figaro","The Independent","Dunya","African Manager", "Full Corpus")
+row.names(tab)<-c("0","1", "2+","Total", "Salience (%)")
+kable(tab, caption ="Frequency of foreign states by media")
+
+write.table(tab,"explor_results/tab_salience_states.csv", row.names=T)
+```
+
+### Unnest foreign states
+
+We filter the news where the number of states is greater or equal to 0 and we duplicate the news where more that one region is mentionend with the function *unnest()*. Then we eliminate the home countries
+
+```{r}
+# unnest states and keep foreign
+df3<-  df %>% filter(nbstates>0) %>%
+          mutate(sta = str_split(states, " ")) %>% 
+          unnest(sta) %>%
+          select(who,sta) %>%
+          filter(substr(who,1,3)!=sta)
+
+```
+
+
+### Aggregation and ranking 
+
+Now we can aggregate the number of states and compute the rank, frequency and cumulative frequency. We add the name in english.
+
+```{r}
+## full corpus
+tabtot <- df3 %>% mutate(who="All") %>% 
+                  group_by(who,sta) %>%
+                  count() %>% 
+                  group_by(who) %>%
+                  arrange(-n) %>%
+                  mutate(rnk=rank(-n), 
+                         pct=100*n/sum(n),
+                         cum = cumsum(pct)
+                         ) 
+## By media
+tabmed <- df3 %>% group_by(who,sta) %>%
+                  count() %>% 
+                  group_by(who) %>%
+                  arrange(-n) %>%
+                  mutate(rnk=rank(-n), 
+                         pct=100*n/sum(n),
+                         cum = cumsum(pct)
+                         ) 
+# Join 
+tabres <-rbind(tabmed, tabtot)
+
+
+## add name
+ name_en<-dict_df %>% filter(lang=="en",
+                             substr(code,1,7)=="STA_NAM")  %>%
+   mutate(sta=substr(code,9,100)) %>% 
+   select(sta, name=code_name) %>% 
+   unique()
+
+tabres<-tabres %>% left_join(name_en) %>% select(who,sta,name,rnk, n,pct,cum) %>% arrange(who)
+
+```
+
+### Table of top 10 by country
+
+We extract the 10  most mentionned macro-regions by media and for the whole corpus
+
+```{r}
+top10<- tabres %>% filter(rnk < 11) %>% 
+           select(who, rnk, name) %>%
+           pivot_wider(values_from = name,names_from = c(who))
+kable(top10, caption = "Top 10 states mentions in each media")
+write.table(top10,"explor_results/tab_top10_states.csv", sep=";",row.names = F)  
+```
+
+
+
+### Rank size rule
+
+We compute for each media the rank size rule over the 32 most mentionned macro regions.
+
+```{r}
+
+### Extract top20
+top20<- tabres %>% filter(rnk < 33 ) %>% 
+           select(who, rnk, pct, name)  
+
+### Compute model parameters
+mod_ranksize<-lm(formula = log(top20$pct)~top20$who+log(top20$rnk):top20$who)
+param<-mod_ranksize$coefficients
+b<-exp(param[1:6])
+b[2:6]<-b[2:6]+b[1]
+a<-param[7:12]
+media<-c("1.Full Corpus","2.Südd. Zeitung","3.Le Figaro","4.The Independent.","5.Dunya","6.African Manager")
+leg<-paste0(media,": a = ",round(a,2) ," & b = ",round(b,0),"%")
+who<-unique(top20$who)
+tabmod<-data.frame(leg,who)
+
+# Add parameters to dataframe
+top20 <- top20 %>% left_join(tabmod)
+
+
+fig <- ggplot(top20) + aes(x=rnk, y=pct) +
+          geom_line() +
+          geom_point() +
+          geom_smooth(fill = NA, method="lm") +
+          scale_x_log10("X = log. rank", breaks= c(1,2,4,8,16,32), minor_breaks=NULL)+
+          scale_y_log10("Y = log. salience (%)", breaks=c(0.1,1,10),
+                        minor_breaks=c(0.2, 0.5,2,5,20)) +
+          facet_wrap(~leg,nrow = 3) + 
+          theme_minimal()
+  
+fig
+ggsave(plot=fig,filename = "explor_results/fig_rnksize_states.pdf",width=6, height=7)
+```
+
+
+
+## D. Linkages between states & macro-regions
+
+Compute a matrix of contingency table crossing the detection of states and region in the corpus.
+
+```{r}
+df2<-df
+# contingency table region vs. states
+df2$nbregions <- ifelse(df2$nbregions>0,"1+ regions ","No regions")
+df2$nbstates <- ifelse(df2$nbstates >0,"1+ states","No states")
+tab<-table(df2$nbstates,df2$nbregions)
+tab<-addmargins(100*prop.table(tab))
+kable(tab, caption = "Cross distribution of states and macro-regions in full corpus", digits=2)
+
+write.table(tab,"explor_results/cross_table_macroregions_states.csv")
+
+```
+
+### unnest states & regions
+
+```{r}
+# unnest states and regions
+df4<-  df %>% filter(nbstates>0, nbregions >0) %>%
+          mutate(sta = str_split(states, " ")) %>% 
+          unnest(sta) %>%
+          select(who,sta, regions) %>%
+          mutate(reg = str_split(regions, " ")) %>%
+          unnest(reg) %>%
+          select(who,sta, reg) %>% 
+          filter(sta != substr(who,1,3)) %>%
+          group_by(sta,reg) %>%
+          count() %>% 
+         ungroup()
+
+
+# add regional and country names
+name_reg<-dict_df %>% filter(lang=="en") %>% mutate(reg=substr(code,5,100)) %>% select(reg, regname=code_name) %>% unique()
+ name_sta<-dict_df %>% filter(lang=="en", substr(code,1,7)=="STA_NAM")  %>%
+   mutate(sta=substr(code,9,100)) %>% 
+   select(sta, staname=code_name) %>% 
+   unique()
+df4<-df4 %>% left_join(name_reg) %>% 
+             left_join(name_sta) %>% 
+             mutate(rnk = rank(-n),
+                    pct = 100*n/sum(n)) %>% 
+             select(rnk,staname,regname,n,pct) %>% 
+             arrange(rnk)
+
+kable(head(df4,20), caption = "Top 20 of most frequent associations of states and macro-regions",
+      digits= c(0,0,0,0,2))
+
+
+write.table(head(df4,20),file = "explor_results/tab_top20_links.csv",row.names = F)
+
+
+
+```
+
+
